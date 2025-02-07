@@ -35,18 +35,22 @@ func (p *Pipe) Init() {
 	p.pipeWriter = pipeWriter
 
 	log.SetPipeWriter(pipeWriter)
+	p.L.Info("Log pipe initialized successfully")
 
 	p.token = serve.AddServe("log pipe", p)
 }
 
 func (p *Pipe) Serve(ctx context.Context) error {
+	p.L.Info("Log pipe service started")
 	const maxCapacity = 1024 * 1024
 	buf := make([]byte, maxCapacity)
 
 	// 设置为非阻塞模式
 	if err := setNonblock(p.pipeReader); err != nil {
+		p.L.Errorf("Failed to set non-blocking mode: %v", err)
 		return err
 	}
+	p.L.Debug("Set pipe to non-blocking mode")
 
 	for {
 		select {
@@ -73,7 +77,6 @@ func (p *Pipe) Serve(ctx context.Context) error {
 					select {
 					case <-ctx.Done():
 						return ctx.Err()
-						// 成功写入
 					default:
 						p.broadcast(line)
 					}
@@ -96,6 +99,7 @@ func (p *Pipe) Subscribe(bufSize int) *Subscriber {
 
 	sub := &Subscriber{ch: ch, done: done}
 	p.subscribers = append(p.subscribers, sub)
+	p.L.Debugf("New subscriber added, current subscribers count: %d", len(p.subscribers))
 
 	sub.doneFunc = func() {
 		p.mu.Lock()
@@ -118,6 +122,9 @@ func (p *Pipe) broadcast(line string) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
+	p.L.Debugf("Broadcasting message to %d subscribers", len(p.subscribers))
+	droppedCount := 0
+
 	for _, sub := range p.subscribers {
 		select {
 		case <-sub.done:
@@ -128,21 +135,33 @@ func (p *Pipe) broadcast(line string) {
 			// 如果channel满了，丢弃这条消息
 			<-sub.ch
 			sub.ch <- line
+			droppedCount++
 		}
+	}
+
+	if droppedCount > 0 {
+		p.L.Debugf("Dropped %d messages due to full channels", droppedCount)
 	}
 }
 
 func (p *Pipe) Close() error {
+	p.L.Info("Closing log pipe")
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	subscriberCount := len(p.subscribers)
 	for _, sub := range p.subscribers {
 		close(sub.done)
 		close(sub.ch)
 	}
+	p.L.Debugf("Closed %d subscriber channels", subscriberCount)
 
 	p.pipeReader.Close()
 	p.pipeWriter.Close()
 
-	return serve.RemoveAndWait(p.token, time.Millisecond*300)
+	err := serve.RemoveAndWait(p.token, time.Millisecond*300)
+	if err != nil {
+		p.L.Errorf("Error while removing service: %v", err)
+	}
+	return err
 }
