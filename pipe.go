@@ -86,10 +86,6 @@ func (p *Pipe) Serve(ctx context.Context) error {
 	}
 }
 
-func setNonblock(file *os.File) error {
-	return syscall.SetNonblock(int(file.Fd()), true)
-}
-
 func (p *Pipe) Subscribe(bufSize int) *Subscriber {
 	p.mu.Lock()
 	defer p.mu.Unlock()
